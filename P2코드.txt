@@ -1,0 +1,153 @@
+#include <Servo.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <SoftwareSerial.h>
+
+// === 객체 및 핀 정의 ===
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+Servo myServo;
+SoftwareSerial BTSerial(A4, A5);  // (RX, TX)
+
+#define TRIG_LED1 11
+#define ECHO_LED1 12
+#define LED1 6
+
+#define TRIG_LED2 3
+#define ECHO_LED2 4
+#define LED2 7
+
+#define LED3 8
+#define LED4 13
+
+#define TRIG_SERVO1 9
+#define ECHO_SERVO1 10
+#define TRIG_SERVO2 A0
+#define ECHO_SERVO2 A1
+
+#define SERVO_PIN 5
+#define SERVO_THRESHOLD 20
+
+// === 상태 변수 ===
+bool isParking = false;
+bool gateOpen = false;
+unsigned long parkingStartTime = 0;
+unsigned long gateCloseDelay = 0;
+unsigned long feeDisplayStart = 0;
+bool showFee = false;
+
+// === 거리 측정 함수 ===
+long getDistance(int trigPin, int echoPin) {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  long duration = pulseIn(echoPin, HIGH, 30000);
+  if (duration == 0) return -1;
+  return duration * 0.034 / 2;
+}
+
+// === setup ===
+void setup() {
+  Serial.begin(9600);
+  BTSerial.begin(9600);
+
+  pinMode(TRIG_LED1, OUTPUT); pinMode(ECHO_LED1, INPUT);
+  pinMode(TRIG_LED2, OUTPUT); pinMode(ECHO_LED2, INPUT);
+  pinMode(TRIG_SERVO1, OUTPUT); pinMode(ECHO_SERVO1, INPUT);
+  pinMode(TRIG_SERVO2, OUTPUT); pinMode(ECHO_SERVO2, INPUT);
+  
+  pinMode(LED1, OUTPUT); pinMode(LED2, OUTPUT);
+  pinMode(LED3, OUTPUT); pinMode(LED4, OUTPUT);
+  digitalWrite(LED3, HIGH); digitalWrite(LED4, HIGH);
+
+  myServo.attach(SERVO_PIN);
+  myServo.write(0);
+
+  lcd.init(); lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("LLCD Parking");
+}
+
+// === loop ===
+void loop() {
+  // 거리 측정
+  long dist1 = getDistance(TRIG_LED1, ECHO_LED1);
+  long dist2 = getDistance(TRIG_LED2, ECHO_LED2);
+  long distServo1 = getDistance(TRIG_SERVO1, ECHO_SERVO1);
+  long distServo2 = getDistance(TRIG_SERVO2, ECHO_SERVO2);
+
+  bool carDetected = (distServo1 > 0 && distServo1 <= SERVO_THRESHOLD) ||
+                     (distServo2 > 0 && distServo2 <= SERVO_THRESHOLD);
+
+  // === 게이트 제어 ===
+  if (carDetected && !gateOpen) {
+    myServo.write(90);
+    gateOpen = true;
+    gateCloseDelay = millis();
+
+    if (!isParking) {
+      isParking = true;
+      parkingStartTime = millis();
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Car In...");
+    }
+  }
+
+  if (gateOpen && millis() - gateCloseDelay > 5000 && !carDetected) {
+    myServo.write(0);
+    gateOpen = false;
+
+    if (isParking) {
+      unsigned long parkingTime = (millis() - parkingStartTime) / 1000;
+      int fee = ((parkingTime + 59) / 60) * 100;
+
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Out: ");
+      lcd.print(parkingTime);
+      lcd.print("s");
+
+      lcd.setCursor(0, 1);
+      lcd.print("Fee: ");
+      lcd.print(fee);
+      lcd.print(" won");
+
+      isParking = false;
+      showFee = true;
+      feeDisplayStart = millis();
+    }
+  }
+
+  // === LCD 요금 표시 시간 지나면 초기화
+  if (showFee && millis() - feeDisplayStart > 5000) {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("LLCD Parking");
+    showFee = false;
+  }
+
+  // === LED 제어 (거리별)
+  static unsigned long lastBlink = 0;
+  bool blink = (millis() - lastBlink) < 250;
+
+  if (millis() - lastBlink >= 500) lastBlink = millis();
+
+  digitalWrite(LED1, (dist1 > 0 && dist1 <= 10) ? LOW :
+                     (dist1 <= 20 && blink) ? HIGH : LOW);
+
+  digitalWrite(LED2, (dist2 > 0 && dist2 <= 10) ? LOW :
+                     (dist2 <= 20 && blink) ? HIGH : LOW);
+
+  // === 블루투스 전송
+  int state1 = (dist1 > 0 && dist1 <= 5) ? 0 : 1;
+  int state2 = (dist2 > 0 && dist2 <= 5) ? 0 : 1;
+  BTSerial.print(state1); BTSerial.println(state2);
+
+  // === 디버깅 출력
+  Serial.print("LED1: "); Serial.print(dist1); Serial.print("cm | ");
+  Serial.print("LED2: "); Serial.print(dist2); Serial.print("cm | ");
+  Serial.print("Servo1: "); Serial.print(distServo1); Serial.print("cm | ");
+  Serial.print("Servo2: "); Serial.println(distServo2);
+}
